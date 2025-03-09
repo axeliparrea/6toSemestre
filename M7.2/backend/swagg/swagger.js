@@ -28,31 +28,27 @@ const swaggerDefinition = {
     schemas: {
       User: {
         type: 'object',
-        required: ['username', 'email', 'password'],
+        required: ['Name', 'Email', 'PasswordHash'],
         properties: {
           id: {
             type: 'integer',
             description: 'ID único del usuario'
           },
-          username: {
+          Name: {
             type: 'string',
-            description: 'Nombre de usuario'
+            description: 'Nombre del usuario'
           },
-          email: {
+          Email: {
             type: 'string',
             format: 'email',
             description: 'Correo electrónico del usuario'
           },
-          password: {
+          PasswordHash: {
             type: 'string',
             format: 'password',
-            description: 'Contraseña del usuario'
+            description: 'Hash de la contraseña del usuario'
           },
-          fullname: {
-            type: 'string',
-            description: 'Nombre completo del usuario'
-          },
-          created_at: {
+          CreatedAt: {
             type: 'string',
             format: 'date-time',
             description: 'Fecha de creación del usuario'
@@ -122,10 +118,9 @@ const swaggerDefinition = {
 };
 
 const options = {
-    swaggerDefinition,
-    apis: ['./routes/route.js']
-  };
-  
+  swaggerDefinition,
+  apis: ['../routes/route.js']
+};
 
 const swaggerSpec = swaggerJSDoc(options);
 

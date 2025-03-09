@@ -1,254 +1,145 @@
-const { db, sql } = require('../config/dataBase');
+const { sql, poolPromise } = require("../config/dataBase");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
-class UserController {
-  async getAll(req, res) {
-    try {
-      const queryResult = await db.executeQuery(`
-        SELECT id, username, email, 
-               CONVERT(VARCHAR, created_at, 120) AS created_at 
-        FROM users 
-        ORDER BY id ASC
-      `);
-      
-      return res.status(200).json({
-        success: true,
-        count: queryResult.recordset.length,
-        data: queryResult.recordset
-      });
-    } catch (error) {
-      console.error('Error en getAll:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al obtener usuarios',
-        error: error.message
-      });
-    }
+const registerUser = async (req, res) => {
+  const { name, email, password, username } = req.body;
+
+  // Validar que todos los campos requeridos están presentes
+  if (!name || !email || !password || !username) {
+    return res.status(400).json({ error: "Todos los campos son obligatorios" });
   }
 
-  async getById(req, res) {
-    try {
-      const userId = req.params.id;
-      
-      if (!userId || isNaN(userId)) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID de usuario inválido'
-        });
-      }
-      
-      const queryResult = await db.executeQuery(`
-        SELECT id, username, email, 
-               CONVERT(VARCHAR, created_at, 120) AS created_at 
-        FROM users 
-        WHERE id = @userId
-      `, { userId: sql.Int, userId });
-      
-      if (queryResult.recordset.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Usuario no encontrado'
-        });
-      }
-      
-      return res.status(200).json({
-        success: true,
-        data: queryResult.recordset[0]
-      });
-    } catch (error) {
-      console.error('Error en getById:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al obtener el usuario',
-        error: error.message
-      });
-    }
+  try {
+    const pool = await poolPromise;
+
+    // Hashear la contraseña antes de almacenarla
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insertar el usuario en la tabla Users
+    const userResult = await pool
+      .request()
+      .input("Name", sql.NVarChar(100), name)
+      .input("Email", sql.NVarChar(255), email)
+      .query("INSERT INTO dbo.Users (Name, Email) OUTPUT INSERTED.Id VALUES (@Name, @Email)");
+
+    const userId = userResult.recordset[0].Id; // Obtener el ID del usuario recién insertado
+
+    // Insertar el login en la tabla Login
+    await pool
+      .request()
+      .input("Username", sql.NVarChar(100), username)
+      .input("PasswordHash", sql.NVarChar(255), hashedPassword)
+      .input("UserId", sql.Int, userId)
+      .query("INSERT INTO dbo.Login (UserId, Username, PasswordHash) VALUES (@UserId, @Username, @PasswordHash)");
+
+    res.status(201).json({ message: "Usuario registrado exitosamente" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+const loginUser = async (req, res) => {
+  const { username, password } = req.body;
+
+  // Validar que todos los campos requeridos están presentes
+  if (!username || !password) {
+    return res.status(400).json({ error: "Todos los campos son obligatorios" });
   }
 
-  async create(req, res) {
-    try {
-      const { username, email, password, fullname } = req.body;
-      
-      if (!username || !email || !password) {
-        return res.status(400).json({
-          success: false,
-          message: 'Datos incompletos. Se requiere username, email y password'
-        });
-      }
-      
-      const checkExisting = await db.executeQuery(`
-        SELECT COUNT(*) AS count FROM users 
-        WHERE username = @username OR email = @email
-      `, { 
-        username: sql.VarChar(100), username,
-        email: sql.VarChar(150), email 
-      });
-      
-      if (checkExisting.recordset[0].count > 0) {
-        return res.status(409).json({
-          success: false,
-          message: 'El nombre de usuario o email ya está en uso'
-        });
-      }
-      
-      const insertResult = await db.executeQuery(`
-        INSERT INTO users (username, email, password, fullname, created_at)
-        VALUES (@username, @email, @password, @fullname, GETDATE());
-        
-        SELECT SCOPE_IDENTITY() AS newId;
-      `, {
-        username: sql.VarChar(100), username,
-        email: sql.VarChar(150), email,
-        password: sql.VarChar(200), password,
-        fullname: { type: sql.NVarChar(200), value: fullname || null }
-    });
-    
-      
-      const newUserId = insertResult.recordset[0].newId;
-      
-      // Obtener el usuario creado
-      const newUser = await db.executeQuery(`
-        SELECT id, username, email, fullname, 
-               CONVERT(VARCHAR, created_at, 120) AS created_at 
-        FROM users 
-        WHERE id = @id
-      `, { id: sql.Int, newUserId });
-      
-      return res.status(201).json({
-        success: true,
-        message: 'Usuario creado exitosamente',
-        data: newUser.recordset[0]
-      });
-    } catch (error) {
-      console.error('Error en create:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al crear el usuario',
-        error: error.message
-      });
+  try {
+    const pool = await poolPromise;
+
+    // Buscar el usuario en la tabla Login usando el username
+    const result = await pool
+      .request()
+      .input("Username", sql.NVarChar(100), username)
+      .query("SELECT l.UserId, l.Username, l.PasswordHash, u.Name FROM dbo.Login l INNER JOIN dbo.Users u ON l.UserId = u.Id WHERE l.Username = @Username");
+
+    if (result.recordset.length === 0) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
     }
+
+    const user = result.recordset[0];
+    const passwordMatch = await bcrypt.compare(password, user.PasswordHash);
+
+    // Verificar si la contraseña coincide con la almacenada
+    if (!passwordMatch) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    // Crear un token JWT
+    const token = jwt.sign({ id: user.UserId, name: user.Name }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    res.json({ message: "Inicio de sesión exitoso", token });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+const getUsers = async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query("SELECT Id, Name, Email, CreatedAt FROM dbo.Users");
+
+    res.status(200).json(result.recordset);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+const updateUser = async (req, res) => {
+  const { id } = req.params;
+  const { name, email, password } = req.body;
+
+  // Validar que al menos un campo sea proporcionado para actualizar
+  if (!name && !email && !password) {
+    return res.status(400).json({ error: "Debe proporcionar al menos un campo (nombre, correo o contraseña)" });
   }
 
-  async update(req, res) {
-    try {
-      const userId = req.params.id;
-      const { username, email, password, fullname } = req.body;
-      
-      if (!userId || isNaN(userId)) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID de usuario inválido'
-        });
-      }
-      
-      const userExists = await db.executeQuery(`
-        SELECT COUNT(*) AS count FROM users WHERE id = @userId
-      `, { userId: sql.Int, userId });
-      
-      if (userExists.recordset[0].count === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Usuario no encontrado'
-        });
-      }
-      
-      let updateFields = [];
-      const params = { userId: sql.Int, userId };
-      
-      if (username) {
-        updateFields.push('username = @username');
-        params.username = { type: sql.VarChar(100), value: username };
-      }
-      
-      if (email) {
-        updateFields.push('email = @email');
-        params.email = { type: sql.VarChar(150), value: email };
-      }
-      
-      if (password) {
-        updateFields.push('password = @password');
-        params.password = { type: sql.VarChar(200), value: password };
-      }
-      
-      if (fullname) {
-        updateFields.push('fullname = @fullname');
-        params.fullname = { type: sql.NVarChar(200), value: fullname };
-      }
-      
-      if (updateFields.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'No se proporcionaron campos para actualizar'
-        });
-      }
-      
-      await db.executeQuery(`
-        UPDATE users 
-        SET ${updateFields.join(', ')} 
-        WHERE id = @userId
-      `, params);
-      
-      const updatedUser = await db.executeQuery(`
-        SELECT id, username, email, fullname, 
-               CONVERT(VARCHAR, created_at, 120) AS created_at 
-        FROM users 
-        WHERE id = @userId
-      `, { userId: sql.Int, userId });
-      
-      return res.status(200).json({
-        success: true,
-        message: 'Usuario actualizado correctamente',
-        data: updatedUser.recordset[0]
-      });
-    } catch (error) {
-      console.error('Error en update:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al actualizar el usuario',
-        error: error.message
-      });
-    }
-  }
+  try {
+    const pool = await poolPromise;
+    const updateQuery = [];
 
-  async delete(req, res) {
-    try {
-      const userId = req.params.id;
-      
-      if (!userId || isNaN(userId)) {
-        return res.status(400).json({
-          success: false,
-          message: 'ID de usuario inválido'
-        });
-      }
-      
-      const userExists = await db.executeQuery(`
-        SELECT COUNT(*) AS count FROM users WHERE id = @userId
-      `, { userId: sql.Int, userId });
-      
-      if (userExists.recordset[0].count === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Usuario no encontrado'
-        });
-      }
-      
-      await db.executeQuery(`
-        DELETE FROM users WHERE id = @userId
-      `, { userId: sql.Int, userId });
-      
-      return res.status(200).json({
-        success: true,
-        message: 'Usuario eliminado correctamente',
-        data: { id: parseInt(userId) }
-      });
-    } catch (error) {
-      console.error('Error en delete:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Error al eliminar el usuario',
-        error: error.message
-      });
-    }
-  }
-}
+    // Construir el query de actualización
+    if (name) updateQuery.push("Name = @Name");
+    if (email) updateQuery.push("Email = @Email");
+    if (password) updateQuery.push("PasswordHash = @PasswordHash");
 
-module.exports = new UserController();
+    if (updateQuery.length === 0) {
+      return res.status(400).json({ error: "No hay campos válidos para actualizar" });
+    }
+
+    const query = `UPDATE dbo.Users SET ${updateQuery.join(", ")} WHERE Id = @Id`;
+
+    const request = pool.request().input("Id", sql.Int, id);
+    if (name) request.input("Name", sql.NVarChar(100), name);
+    if (email) request.input("Email", sql.NVarChar(255), email);
+    if (password) request.input("PasswordHash", sql.NVarChar(255), await bcrypt.hash(password, 10));
+
+    await request.query(query);
+    res.status(200).json({ message: "Usuario actualizado exitosamente" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+const deleteUser = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const pool = await poolPromise;
+    await pool.request().input("Id", sql.Int, id).query("DELETE FROM dbo.Users WHERE Id = @Id");
+
+    res.status(200).json({ message: "Usuario eliminado exitosamente" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error en el servidor" });
+  }
+};
+
+module.exports = { registerUser, loginUser, getUsers, updateUser, deleteUser };
