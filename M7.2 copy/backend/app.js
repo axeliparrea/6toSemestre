@@ -4,7 +4,7 @@ const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('./swagg/swagger');
 const routes = require('./routes/route');
-const { poolPromise } = require('./config/dataBase'); 
+const { db, sql } = require('./config/dataBase');
 
 const app = express();
 
@@ -23,8 +23,8 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'));
 }
 
-poolPromise
-  .then(pool => console.log('Conexión a la base de datos establecida correctamente'))
+db.connect()
+  .then(() => console.log('Conexión a la base de datos establecida correctamente'))
   .catch(err => {
     console.error('Error al conectar a la base de datos:', err.message);
     process.exit(1);

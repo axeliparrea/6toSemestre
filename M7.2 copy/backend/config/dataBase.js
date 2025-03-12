@@ -8,7 +8,7 @@ const dbSettings = {
   database: process.env.DB_NAME,
   options: {
     encrypt: true,
-    trustServerCertificate: true,
+    trustServerCertificate: false,
     connectionTimeout: 30000
   },
   pool: {
@@ -18,18 +18,47 @@ const dbSettings = {
   }
 };
 
-const poolPromise = new sql.ConnectionPool(dbSettings)
-  .connect()
-  .then(pool => {
-    console.log('Conexión a la base de datos establecida');
-    return pool;
-  })
-  .catch(err => {
-    console.error('Error al conectar a la base de datos:', err.message);
-    throw new Error('No se pudo conectar a la base de datos');
-  });
+class DatabaseConnection {
+  constructor() {
+    this.pool = null;
+    this.connected = false;
+  }
+
+  async connect() {
+    if (this.connected && this.pool) {
+      return this.pool;
+    }
+
+    try {
+      this.pool = await new sql.ConnectionPool(dbSettings).connect();
+      this.connected = true;
+      console.log('Conexión a la base de datos establecida');
+      return this.pool;
+    } catch (error) {
+      console.error('Error al conectar a la base de datos:', error.message);
+      throw new Error('No se pudo conectar a la base de datos');
+    }
+  }
+
+  async executeQuery(query, params = {}) {
+    try {
+      const conn = await this.connect();
+      const request = conn.request();
+      
+      Object.entries(params).forEach(([key, value]) => {
+        request.input(key, value);
+      });
+      
+      const result = await request.query(query);
+      return result;
+    } catch (error) {
+      console.error('Error al ejecutar la consulta:', error.message);
+      throw new Error('Error al ejecutar la consulta en la base de datos');
+    }
+  }
+}
 
 module.exports = {
-  sql,
-  poolPromise
+  db: new DatabaseConnection(),
+  sql
 };
